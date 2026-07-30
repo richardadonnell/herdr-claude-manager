@@ -1,0 +1,80 @@
+name: lint
+
+# Static checks only. herdrm drives a running Herdr server and launches Claude
+# Code panes, and a GitHub runner has neither, so CI never executes the tool.
+# Run `herdrm -SelfTest` on a machine with Herdr up to cover the runtime path.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Parse first: a syntax error makes every analyzer result below meaningless.
+      - name: Parse-check every .ps1
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($file in Get-ChildItem -Path . -Filter *.ps1 -Recurse -File) {
+            $errors = $null
+            $rel = [IO.Path]::GetRelativePath($PWD.Path, $file.FullName) -replace '\\', '/'
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed++
+              foreach ($e in $errors) {
+                $msg = $e.Message -replace '\r?\n', ' '
+                Write-Host "::error file=$rel,line=$($e.Extent.StartLineNumber),col=$($e.Extent.StartColumnNumber)::$msg"
+              }
+            }
+            else {
+              Write-Host "parse ok: $rel"
+            }
+          }
+          if ($failed -gt 0) {
+            Write-Host "::error::$failed file(s) failed to parse."
+            exit 1
+          }
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          "PSScriptAnalyzer $((Get-Module PSScriptAnalyzer).Version)"
+
+      - name: Invoke-ScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = @(Invoke-ScriptAnalyzer -Path . -Settings .\PSScriptAnalyzerSettings.psd1 -Recurse)
+          if ($results.Count -eq 0) {
+            Write-Host 'PSScriptAnalyzer: clean.'
+            exit 0
+          }
+          $results |
+            Sort-Object Severity -Descending |
+            Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap |
+            Out-String -Width 200 |
+            Write-Host
+          $blocking = @($results | Where-Object { $_.Severity -eq 'Error' -or $_.Severity -eq 'Warning' })
+          foreach ($r in $blocking) {
+            $rel = [IO.Path]::GetRelativePath($PWD.Path, $r.ScriptPath) -replace '\\', '/'
+            $msg = "$($r.RuleName): $($r.Message)" -replace '\r?\n', ' '
+            Write-Host "::error file=$rel,line=$($r.Line),col=$($r.Column)::$msg"
+          }
+          if ($blocking.Count -gt 0) {
+            Write-Host "::error::$($blocking.Count) Error/Warning finding(s). Fix them or justify an exclusion in PSScriptAnalyzerSettings.psd1."
+            exit 1
+          }
+          Write-Host "$($results.Count) Information finding(s), none blocking."

@@ -1,0 +1,17 @@
+# Git stores every text file with LF and checks it out with LF by default.
+* text=auto eol=lf
+
+# Windows shells read these off disk. A .cmd with LF line endings can misbehave
+# under cmd.exe, so check the Windows script types out with CRLF.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# Everything else stays LF on every platform.
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh   text eol=lf
