@@ -1,9 +1,11 @@
 # herdr-claude-manager
 
-A PowerShell menu that opens a [Herdr](https://herdr.dev) workspace tiled with N Claude Code panes, then lists, resumes, or kills those workspaces later.
+A PowerShell menu that opens a [Herdr](https://herdr.dev) workspace tiled with N Claude Code panes, then lists, resumes, or kills those workspaces later. It runs on Windows under PowerShell 7.
 
 [![lint](https://img.shields.io/github/actions/workflow/status/richardadonnell/herdr-claude-manager/lint.yml?branch=main&label=lint)](https://github.com/richardadonnell/herdr-claude-manager/actions/workflows/lint.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Herdr's plugin ecosystem grew up on macOS and Linux, and this is the PowerShell path into it. Of the 133 projects on the awesome-herdr list (`yigitkonur/awesome-herdr`), one is PowerShell, a per-pane token badge, and every workspace or session tool there is Shell, Go, Rust, TypeScript, or Python.
 
 ## What it does
 
@@ -27,6 +29,7 @@ Choose:
 
 ## Requirements
 
+- **Windows**, for the install path. The installer writes a `herdrm.cmd` shim and appends to your **User** PATH, and both of those are Windows-only mechanics. `herdrm.ps1` itself shells out to the `herdr` and `claude` CLIs and calls nothing Windows-specific, so running it by path elsewhere should work, though that route is untested.
 - **PowerShell 7.0+** (`pwsh`). The script declares `#Requires -Version 7.0`, so Windows PowerShell 5.1 refuses to run it.
 - **Herdr** installed, `herdr` on PATH, and the server running. `herdr status server` has to print `status: running`. Verified against Herdr 0.7.5-preview, protocol 17.
 - **Claude Code CLI** (`claude`) on PATH. Only the pane launch needs it; `-SelfTest` skips claude entirely.
@@ -78,6 +81,20 @@ Run `herdrm` with no arguments for the menu.
 
 Options 2 and 3 both end by focusing the workspace. What happens next depends on where you invoked `herdrm` from. Inside Herdr (`$env:HERDR_ENV` is `1`) the script prints a note telling you to switch to it and returns you to the menu. Outside Herdr it attaches the TUI by running `herdr`, which takes over the terminal and ends the script when you detach.
 
+### Non-interactive flags
+
+```powershell
+herdrm -List
+herdrm -New -Label api
+herdrm -New -Label api -Count 4
+```
+
+`-List` prints the same workspace table option 1 produces, then exits 0.
+
+`-New` requires `-Label` and accepts an optional `-Count`, which defaults to 1. It creates the workspace, tiles the panes, renames them, launches claude in each, prints the workspace id and the pane name range, then exits 0. It skips the TUI attach and never drops into the menu, which is what makes it safe to call from a script. `-Label` obeys the same rule the menu uses (`^[\w.-]+$`); a label with a space, a quote, or anything else outside that set gets a clear rejection message and a non-zero exit.
+
+Killing a workspace stays interactive. Option 4 is the only way to do it, and the `y` confirmation guards a command that closes panes and the agents living in them.
+
 ### Self-test
 
 ```powershell
@@ -119,6 +136,20 @@ The script shells out to `herdr status server` and looks for `status: running` i
 
 **`herdrm` is not recognized after installing**
 Open a new terminal. The installer appends to the User PATH and writes a profile function, and neither reaches a shell that was already open. If a fresh terminal still fails, the profile did not load: check that `$PROFILE.CurrentUserAllHosts` contains the `# >>> herdrm >>>` block, and reload it with `. $PROFILE.CurrentUserAllHosts`. As a fallback, call the installed copy by path with `pwsh -File "$env:LOCALAPPDATA\Programs\herdrm\herdrm.ps1"`.
+
+## Related projects
+
+Several projects cover nearby ground. Two things set `herdrm` apart: it runs on Windows through PowerShell, and it tiles any N you type without a config file. Each project below does something this one does not, so pick by what you need.
+
+- [noor-latif/herd](https://github.com/noor-latif/herd) (Shell) sits closest to the core feature here. It gives you a project-scoped workspace with an N-agent grid, default 2x2, one Pi agent per pane, keyed to the current directory, and it relaunches dead agents.
+- [cloudmanic/herdr-plus](https://github.com/cloudmanic/herdr-plus) (Go, 178 stars) reads declarative TOML project templates and spins up a whole workspace from a fuzzy picker, plus a quick-action launcher.
+- [andrewchng/herdr-sessionizer](https://github.com/andrewchng/herdr-sessionizer) (TypeScript) runs fzf over project roots and git worktrees, with TOML defining tabs, splits, and per-pane startup commands.
+- [razajamil/herdr-plugin-workspace-manager](https://github.com/razajamil/herdr-plugin-workspace-manager) (Rust) applies a YAML layout per repo to every new worktree.
+- [ridho9/switchr](https://github.com/ridho9/switchr) (Go) gives you a full-screen session picker showing the workspace, tab, and pane tree.
+- [j0urneyk/herdrctx](https://github.com/j0urneyk/herdrctx) (Go) is a keyboard-driven TUI for attaching, stopping, deleting, creating, and searching sessions.
+- [carsonjones/herdr-plugin-tiles](https://github.com/carsonjones/herdr-plugin-tiles) adds six named split-ratio actions that override the default even split.
+
+Want the same layout every time you open a given repo? Reach for herdr-plus, herdr-sessionizer, or herdr-plugin-workspace-manager. A checked-in TOML or YAML file describes that layout better than a pane-count prompt does. If most of your time goes on finding and attaching to sessions that already exist, switchr and herdrctx hand you a richer picker than a numbered menu. Come here when you are on Windows, or when you want to type `4` and get four even panes with no file to author first.
 
 ## License
 

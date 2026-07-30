@@ -16,6 +16,25 @@
   both the Herdr pane label and the claude --name. Persistence is free: the
   server keeps running when you detach, so panes/agents survive until killed.
 
+  -List, -New and -SelfTest skip the menu and never prompt, so a script or a
+  scheduled job can drive the tool. They exit 0 on success, 2 on bad usage,
+  1 on anything else. Killing stays menu-only.
+
+.PARAMETER List
+  Non-interactive: print the workspace table and exit.
+
+.PARAMETER New
+  Non-interactive: create a workspace, tile -Count panes, name them, launch
+  claude in each, print the workspace id and the pane name range, exit.
+  Requires -Label. Skips the TUI attach, which would block a script.
+
+.PARAMETER Label
+  Name for the workspace -New creates. Letters, digits, dot, underscore and
+  hyphen only; the name reaches a shell, so spaces and quotes are rejected.
+
+.PARAMETER Count
+  How many Claude panes -New builds. Default 1.
+
 .PARAMETER SelfTest
   Non-interactive: build a workspace of -SelfTestCount panes WITHOUT claude,
   assert the pane count, close it, exit. Sanity-checks the tiler.
@@ -28,15 +47,62 @@
   Opens the menu.
 
 .EXAMPLE
+  herdrm -List
+  Prints the workspace table and exits.
+
+.EXAMPLE
+  herdrm -New -Label review -Count 4
+  Tiles 4 Claude panes named review-1..review-4 and exits without attaching.
+
+.EXAMPLE
   herdrm -SelfTest -SelfTestCount 3
   Tiles 3 claude-free panes, asserts the count, closes the workspace.
 #>
+[CmdletBinding(DefaultParameterSetName = 'Menu')]
 param(
-  [switch]$SelfTest,
-  [int]$SelfTestCount = 5
+  [Parameter(Mandatory, ParameterSetName = 'List')][switch]$List,
+  [Parameter(Mandatory, ParameterSetName = 'New')][switch]$New,
+  # Not Mandatory on purpose: a mandatory parameter PROMPTS for a missing value
+  # instead of failing, which hangs any script that forgets it. Checked below.
+  [Parameter(ParameterSetName = 'New')][string]$Label,
+  [Parameter(ParameterSetName = 'New')][int]$Count = 1,
+  [Parameter(Mandatory, ParameterSetName = 'SelfTest')][switch]$SelfTest,
+  [Parameter(ParameterSetName = 'SelfTest')][int]$SelfTestCount = 5
 )
 
 $ErrorActionPreference = 'Stop'
+
+# --- shared input rules (the menu and the flags must agree) -----------------
+
+# The label lands in "claude -n <label>-<n>", which the pane's shell re-parses.
+# A space or a quote there word-splits every pane's name, so keep it shell-inert.
+$LabelHint = 'Name: letters, digits, . _ - only (no spaces).'
+function Test-WorkspaceLabel {
+  param([string]$Candidate)
+  $Candidate -match '^[\w.-]+$'
+}
+
+# Read-Host hands back $null at stdin EOF (a pipe running dry), and .Trim() on
+# $null throws. Report EOF as $null so callers can quit; "" stays "".
+function Read-Line {
+  param([string]$Prompt)
+  $answer = Read-Host $Prompt
+  if ($null -eq $answer) { return $null }
+  $answer.Trim()
+}
+
+# Reject a missing or bad -Label before we touch the server. Never prompt: -New
+# exists so a script can call it, and a prompt there would block until killed.
+if ($New) {
+  if ([string]::IsNullOrWhiteSpace($Label)) {
+    [Console]::Error.WriteLine("herdrm: -New requires -Label. $LabelHint")
+    exit 2
+  }
+  if (-not (Test-WorkspaceLabel $Label)) {
+    [Console]::Error.WriteLine("herdrm: bad -Label '$Label'. $LabelHint")
+    exit 2
+  }
+}
 
 if (-not (Get-Command herdr -ErrorAction SilentlyContinue)) {
   throw "herdr not found on PATH. Install/launch Herdr first."
@@ -114,6 +180,12 @@ function New-ClaudeWorkspace {
   [pscustomobject]@{ WorkspaceId = $wsId; PaneCount = $ordered.Count }
 }
 
+# One creation summary for both callers, so the menu and -New cannot drift.
+function Write-CreatedSummary {
+  param([string]$Label, $Result)
+  Write-Host "Created $($Result.WorkspaceId): $($Result.PaneCount) panes '$Label-1'..'$Label-$($Result.PaneCount)'." -ForegroundColor Green
+}
+
 # Focus a workspace; attach the TUI if we're not already inside Herdr.
 function Enter-Workspace {
   param([string]$WsId)
@@ -146,9 +218,9 @@ function Select-Workspace {
   $ws = Get-Workspaces
   if (-not $ws) { Write-Host "No workspaces."; return $null }
   Show-Workspaces
-  $sel = Read-Host "$Verb which # (blank to cancel)"
-  if (-not $sel) { return $null }
-  $hit = $ws | Where-Object { "$($_.number)" -eq $sel.Trim() }
+  $sel = Read-Line "$Verb which # (blank to cancel)"
+  if (-not $sel) { return $null }   # blank or EOF: cancel
+  $hit = $ws | Where-Object { "$($_.number)" -eq $sel }
   if (-not $hit) { Write-Host "No workspace #$sel." -ForegroundColor Yellow; return $null }
   $hit
 }
@@ -172,6 +244,19 @@ if ($SelfTest) {
   return
 }
 
+# --- non-interactive flags (no menu, no TUI attach) -------------------------
+
+if ($List) {
+  Show-Workspaces
+  return
+}
+
+if ($New) {
+  $r = New-ClaudeWorkspace -Label $Label -Count $Count
+  Write-CreatedSummary $Label $r
+  return
+}
+
 # --- menu -------------------------------------------------------------------
 
 $exit = $false
@@ -183,25 +268,27 @@ while (-not $exit) {
   Write-Host " 3) Resume (focus + attach)"
   Write-Host " 4) Kill a workspace"
   Write-Host " q) Quit"
-  switch ((Read-Host "Choose").Trim().ToLower()) {
+  $choice = Read-Line "Choose"
+  if ($null -eq $choice) { break }   # stdin EOF: quit like 'q'
+  switch ($choice.ToLower()) {
     '1' { Show-Workspaces }
     '2' {
-      $label = (Read-Host "Workspace name").Trim()
+      $label = Read-Line "Workspace name"
+      if ($null -eq $label) { break }   # EOF: back to the menu
       if (-not $label) { $label = 'claude' }
-      # The label lands in "claude -n <label>-<n>", which the pane's shell re-parses.
-      # A space or a quote there word-splits every pane's name, so keep it shell-inert.
-      if ($label -notmatch '^[\w.-]+$') {
-        Write-Host "Name: letters, digits, . _ - only (no spaces)." -ForegroundColor Yellow
+      if (-not (Test-WorkspaceLabel $label)) {
+        Write-Host $LabelHint -ForegroundColor Yellow
         break
       }
-      $cntRaw = (Read-Host "How many Claude panes").Trim()
+      $cntRaw = Read-Line "How many Claude panes"
+      if ($null -eq $cntRaw) { break }
       $cnt = 0
       if (-not [int]::TryParse($cntRaw, [ref]$cnt) -or $cnt -lt 1) {
         Write-Host "Need a positive number." -ForegroundColor Yellow
         break
       }
       $r = New-ClaudeWorkspace -Label $label -Count $cnt
-      Write-Host "Created $($r.WorkspaceId): $($r.PaneCount) panes '$label-1'..'$label-$($r.PaneCount)'." -ForegroundColor Green
+      Write-CreatedSummary $label $r
       Enter-Workspace $r.WorkspaceId   # attaches -> ends script when run outside Herdr
       $exit = ($env:HERDR_ENV -ne '1')
     }
@@ -212,8 +299,8 @@ while (-not $exit) {
     '4' {
       $hit = Select-Workspace -Verb 'Kill'
       if ($hit) {
-        $ok = (Read-Host "Close '$($hit.label)' ($($hit.workspace_id), $($hit.pane_count) panes)? Type y to confirm").Trim().ToLower()
-        if ($ok -eq 'y') {
+        $ok = Read-Line "Close '$($hit.label)' ($($hit.workspace_id), $($hit.pane_count) panes)? Type y to confirm"
+        if ($ok -and $ok.ToLower() -eq 'y') {
           Invoke-Herdr workspace close $hit.workspace_id | Out-Null
           Write-Host "Closed $($hit.workspace_id)." -ForegroundColor Green
         }
